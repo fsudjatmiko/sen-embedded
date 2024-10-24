@@ -1,122 +1,146 @@
 #include <avr/io.h>
 #include <util/delay.h>
 
-// Define states
-#define STATE_IDLE 1
-#define STATE_RIGHT 2
-#define STATE_LEFT 3
-#define STATE_HAZARD 4
-#define STATE_STOP 5
+#define LED_MATRIX_PORT PORTC
+#define LED_MATRIX_DDR DDRC
 
-// Variables
-uint8_t state = STATE_IDLE;
+#define TURN_RIGHT PD2
+#define TURN_LEFT PD3
+#define HAZARD_BUTTON PD4
 
-// Button debouncing function
-uint8_t is_button_pressed() {
-    if (!(PIND & (1 << PD2))) {
-        _delay_ms(50); // Debouncing delay
-        if (!(PIND & (1 << PD2))) {
-            return 1;
+#define DEBOUNCE_DELAY 50 // 50ms debounce delay
+
+// Store the state of the LEDs
+uint8_t ledMatrix[6][6] = {0}; // For 6x6 matrix
+
+void setup() {
+    // Set PC0 to PC5 as output for LED matrix columns
+    LED_MATRIX_DDR |= 0b00111111; // PC0-PC5 as output
+    
+    // Set PD0 to PD5 as output for rows (assuming PD0-PD5 control rows 2-7)
+    DDRD |= 0b00111111;
+
+    // Set PD2, PD3, PD4 as input for switches and the button
+    DDRD &= ~(1 << TURN_RIGHT) & ~(1 << TURN_LEFT) & ~(1 << HAZARD_BUTTON);
+    
+    // Enable pull-up resistors for inputs
+    PORTD |= (1 << TURN_RIGHT) | (1 << TURN_LEFT) | (1 << HAZARD_BUTTON);
+}
+
+uint8_t isButtonPressed(uint8_t pin) {
+    if (!(PIND & (1 << pin))) { // Check if the button is pressed (active low)
+        _delay_ms(DEBOUNCE_DELAY); // Wait for debounce delay
+        if (!(PIND & (1 << pin))) { // Check again if the button is still pressed
+            return 1; // Button press confirmed
         }
     }
-    return 0;
+    return 0; // Button not pressed
 }
 
-// Function to display pattern with multiplexing
-void display_pattern(uint8_t pattern[6]) {
-    for (uint8_t row = 0; row < 6; row++) {
-        // Set row output (PC0-PC5 as row)
-        DDRC = 0b00111111; // Set PC0-PC5 as output
-        PORTC = ~(1 << row);  // Select the row (active low)
-
-        // Set column output for that row
-        DDRC = 0b00111111; // Ensure PC0-PC5 are outputs for columns
-        PORTC = pattern[row]; // Set column pattern
-
-        _delay_ms(2);  // Short delay for multiplexing
-    }
+void setMatrix(uint8_t colMask, uint8_t row) {
+    // Set the columns and activate the row
+    LED_MATRIX_PORT = colMask; // Set columns
+    PORTD &= ~(1 << (row - 2)); // Activate the row (PD0-PD5 control rows 2-7)
+    _delay_ms(1); // Short delay to allow the LEDs to light up
+    PORTD |= (1 << (row - 2)); // Deactivate the row
 }
 
-// Function to switch to next state on button press
-void change_state() {
-    if (is_button_pressed()) {
-        state++;
-        if (state > STATE_STOP) {
-            state = STATE_IDLE;
+void multiplex() {
+    for (uint8_t row = 2; row <= 7; row++) {
+        // Create the column mask for the current row
+        uint8_t colMask = 0;
+
+        // Create a mask based on the ledMatrix state
+        for (uint8_t col = 2; col <= 7; col++) {
+            if (ledMatrix[row - 2][col - 2]) { // Check if the LED should be on
+                colMask |= (1 << (col - 2)); // Set the corresponding column bit
+            }
         }
+
+        // Update the matrix for this row
+        setMatrix(colMask, row);
     }
 }
 
-int main(void) {
-    // Setup PC0-PC5 as output for matrix columns and rows (multiplexed)
-    DDRC = 0b00111111;
-    // Setup PD2 as input for button
-    DDRD &= ~(1 << PD2);
-    PORTD |= (1 << PD2); // Enable pull-up resistor for button
+void turnRightSignal() {
+    // Set up the diagonal for right turn signal
+    for (uint8_t i = 0; i < 6; i++) {
+        // Light up the diagonal for right turn signal
+        ledMatrix[i][i] = 1; // Set the corresponding LED to on
+    }
 
-    // Define patterns
-    uint8_t idle_pattern[6] = {0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000};
+    // Multiplex to display the matrix
+    for (uint8_t i = 0; i < 10; i++) { // Repeat to make it visible
+        multiplex();
+        _delay_ms(100); // Adjust speed as needed
+    }
 
-    // Corrected right arrow pattern (pointing right)
-    uint8_t right_arrow[6] = {
-        0b00001000, //   ▢▢▢▣▢▢▢
-        0b00001100, //   ▢▢▢▣▣▢▢
-        0b00111111, //   ▢▢▣▣▣▣▣
-        0b00111111, //   ▢▢▣▣▣▣▣
-        0b00001100, //   ▢▢▢▣▣▢▢
-        0b00001000  //   ▢▢▢▣▢▢▢
-    };
+    // Clear the matrix
+    for (uint8_t i = 0; i < 6; i++) {
+        ledMatrix[i][i] = 0; // Clear the diagonal
+    }
+}
 
-    // Corrected left arrow pattern (pointing left)
-    uint8_t left_arrow[6] = {
-        0b00010000, //   ▢▣▢▢▢▢▢
-        0b00110000, //   ▣▣▢▢▢▢▢
-        0b11111100, //   ▣▣▣▣▣▣▢
-        0b11111100, //   ▣▣▣▣▣▣▢
-        0b00110000, //   ▣▣▢▢▢▢▢
-        0b00010000  //   ▢▣▢▢▢▢▢
-    };
+void turnLeftSignal() {
+    // Set up the diagonal for left turn signal
+    for (uint8_t i = 0; i < 6; i++) {
+        ledMatrix[i][5 - i] = 1; // Set the corresponding LED to on
+    }
 
-    // Corrected stop pattern (central point expanding outward)
-    uint8_t stop_pattern[6] = {
-        0b00011000, //   ▢▢▣▣▢▢
-        0b00100100, //   ▢▣▢▢▣▢
-        0b01000010, //   ▣▢▢▢▢▣
-        0b01000010, //   ▣▢▢▢▢▣
-        0b00100100, //   ▢▣▢▢▣▢
-        0b00011000  //   ▢▢▣▣▢▢
-    };
+    // Multiplex to display the matrix
+    for (uint8_t i = 0; i < 10; i++) { // Repeat to make it visible
+        multiplex();
+        _delay_ms(100); // Adjust speed as needed
+    }
 
-    uint8_t hazard_pattern[6] = {0b00111110, 0b00100010, 0b00010100, 0b00001000, 0b00010100, 0b00100010}; // Blinking triangle
+    // Clear the matrix
+    for (uint8_t i = 0; i < 6; i++) {
+        ledMatrix[i][5 - i] = 0; // Clear the diagonal
+    }
+}
 
-    // Main loop
+void hazardSignal() {
+    while (isButtonPressed(HAZARD_BUTTON)) { // Keep the hazard lights on while the button is pressed
+        // Set all LEDs on for hazard
+        for (uint8_t row = 0; row < 6; row++) {
+            for (uint8_t col = 0; col < 6; col++) {
+                ledMatrix[row][col] = 1; // Set all to on
+            }
+        }
+        
+        multiplex(); // Update the matrix to show all LEDs on
+        _delay_ms(250); // Delay for half of the blinking time
+        for (uint8_t row = 0; row < 6; row++) {
+            for (uint8_t col = 0; col < 6; col++) {
+                ledMatrix[row][col] = 0; // Set all to off
+            }
+        }
+        multiplex(); // Update the matrix to show all LEDs off
+        _delay_ms(250); // Delay for the other half of the blinking time
+    }
+}
+
+int main() {
+    setup();
+    
     while (1) {
-        change_state(); // Check button and change state
-
-        switch (state) {
-            case STATE_IDLE:
-                display_pattern(idle_pattern);
-                break;
-
-            case STATE_RIGHT:
-                display_pattern(right_arrow);
-                break;
-
-            case STATE_LEFT:
-                display_pattern(left_arrow);
-                break;
-
-            case STATE_HAZARD:
-                display_pattern(hazard_pattern);
-                _delay_ms(300); // Blinking delay
-                display_pattern(idle_pattern);
-                _delay_ms(300); // Blinking delay
-                break;
-
-            case STATE_STOP:
-                display_pattern(stop_pattern);
-                break;
+        if (!(PIND & (1 << TURN_RIGHT))) {
+            turnRightSignal(); // Activate right turn signal
+        } 
+        else if (!(PIND & (1 << TURN_LEFT))) {
+            turnLeftSignal(); // Activate left turn signal
+        } 
+        else if (isButtonPressed(HAZARD_BUTTON)) {
+            hazardSignal(); // Activate hazard lights
+        } 
+        else {
+            // Clear the LED matrix if no signals are active
+            for (uint8_t row = 0; row < 6; row++) {
+                for (uint8_t col = 0; col < 6; col++) {
+                    ledMatrix[row][col] = 0; // Set all to off
+                }
+            }
+            multiplex(); // Update the matrix to show all LEDs off
         }
     }
-    return 0;
 }
